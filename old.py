@@ -246,7 +246,6 @@ def getBestMove(image):
 
     for i in range(len(data)):
         cvt = converPointToPosition(mapped_points[0][i], 720, 1280)
-
         
         if cvt[0] == '?' or cvt == '-1':
             print(mapped_points[0][i])
