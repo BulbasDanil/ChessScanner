@@ -1,14 +1,18 @@
 import cv2
+import cv2.aruco as aruco
+
+import json
 
 from inference_sdk import InferenceHTTPClient
 import numpy as np
+
+import matplotlib.pyplot as plt
 
 import chess
 import chess.svg
 import requests
 
-
-from IPython.display import clear_output
+import base64
 
 def read_api_key(filepath=".secrets"):
     with open(filepath, "r") as file:
@@ -23,46 +27,38 @@ CLIENT = InferenceHTTPClient(
 
 WIDTH = 1280
 HEIGHT = 960
-boardCorners = []
 
 ### Board corners processing
 
-def extractBoardCorners(points, pattern_size):
-    points = points.reshape(-1, 2)
-
-    bottom_left = [int(points[0][0]),  int(points[0][1])]
-    top_left = [int(points[pattern_size[0] - 1][0]),
-                   int(points[pattern_size[0] - 1][1])]
-    bottom_right = [int(points[-pattern_size[0]][0]),
-                 int(points[-pattern_size[0]][1])]
-    top_right = [int(points[-1][0]),  int(points[-1][1])]
-
-    bottomCellSide = (bottom_right[0] - bottom_left[0]) // 6
-    bottom_right[0] += int(bottomCellSide * 1.3)
-    bottom_right[1] += int(bottomCellSide * 0.85)
-    bottom_left[0] -= int(bottomCellSide * 1.3)
-    bottom_left[1] += int(bottomCellSide * 0.85)
-
-    topCellSide = (top_right[0] - top_left[0]) // 6
-    top_right[0] += int(topCellSide * 0.95)
-    top_right[1] -= int(topCellSide * 0.55)
-    top_left[0] -= int(topCellSide * 0.95)
-    top_left[1] -= int(topCellSide * 0.55)
-
-    return [tuple(top_left), tuple(top_right), tuple(bottom_left), tuple(bottom_right)]
-
 def getBoardCorners(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    pattern_size = (7, 7)
 
-    res, corners = cv2.findChessboardCorners(gray, pattern_size, None)
+    aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    detector = aruco.ArucoDetector(aruco_dict)
 
-    if res:
-        corner_points = extractBoardCorners(corners, pattern_size)
-        return corner_points
-    else:
-        print("Chessboard corners not found.")
+    corners, ids, _ = detector.detectMarkers(gray)
+
+    if ids is None or len(ids) < 4:
+        print(corners)
+        print(ids)
+        print("Not all ArUco markers detected.")
         return []
+
+    ids = ids.flatten()
+    marker_map = {id_: corner for id_, corner in zip(ids, corners)}
+
+    def get_center(corner):
+        pts = corner[0]
+        return pts.mean(axis=0)
+
+    corner_points = [
+        get_center(marker_map[0]),  # top-left
+        get_center(marker_map[1]),  # top-right
+        get_center(marker_map[2]),  # bottom-left
+        get_center(marker_map[3])   # bottom-right
+    ]
+
+    return corner_points
     
 
 ### Inference block
@@ -79,23 +75,24 @@ def parse_data(data):
 
     return res
 
-def converPointToPosition(point, height, width):
+def converPointToPosition(point):
     dictionary = {
-        7: 'A',
-        6: 'B',
-        5: 'C',
-        4: 'D',
-        3: 'E',
-        2: 'F',
-        1: 'G',
-        0: 'H',
+        0: 'A',
+        1: 'B',
+        2: 'C',
+        3: 'D',
+        4: 'E',
+        5: 'F',
+        6: 'G',
+        7: 'H',
     }
 
-    width_section = int(width / 8)
-    height_section = int(height / 8)
+    width_section = int(WIDTH / 8)
+    height_section = int(HEIGHT / 8)
 
-    row = (point[0] // width_section)
-    col = point[1] // height_section
+    row = point[1] // height_section
+    row = abs(7 - row)
+    col = point[0] // width_section
 
     letter = dictionary.get(int(col), '?')
 
@@ -151,6 +148,31 @@ def converToFen(data):
 
     return fen
 
+def warpedToOriginalCoords(x, y, inverse_matrix):
+    point = np.array([[[x, y]]], dtype=np.float32)
+    original_point = cv2.perspectiveTransform(point, inverse_matrix)
+    return original_point[0][0] 
+
+def convertPosToOriginCoordinates(move, inverse_matrix):
+    dictionary = {
+    'a': 0,
+    'b': 1,
+    'c': 2,
+    'd': 3,
+    'e': 4,
+    'f': 5,
+    'g': 6,
+    'h': 7
+}
+    
+    width_section = int(WIDTH / 8)
+    height_section = int(HEIGHT / 8)
+
+    x_pos = int(dictionary[move[0]] * width_section + width_section / 2)
+    y_pos = int((abs(8 - int(move[1]))) * height_section + height_section / 2)
+
+    return warpedToOriginalCoords(x_pos, y_pos, inverse_matrix)
+
 
 def post_chess_api(data):
     url = "https://chess-api.com/v1"
@@ -186,6 +208,8 @@ def getBestMove(image, corners):
     ], dtype=np.float32)
 
     matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+    inverse_matrix = np.linalg.inv(matrix)
+
     warped_image = cv2.warpPerspective(imageCopy, matrix, (WIDTH, HEIGHT))
 
     # Mapping piece to new positions
@@ -221,7 +245,7 @@ def getBestMove(image, corners):
     chessBoardData = []
 
     for i in range(len(data)):
-        cvt = converPointToPosition(mapped_points[0][i], HEIGHT, WIDTH)
+        cvt = converPointToPosition(mapped_points[0][i])
         
         if cvt[0] == '?' or cvt == '-1':
             print(mapped_points[0][i])
@@ -229,42 +253,40 @@ def getBestMove(image, corners):
 
         chessBoardData.append([cvt, data[i][3]])
 
-    print(chessBoardData)
-
-    # Converting pos to fen and sending to the API
+    #### Converting pos to fen and sending to the API
 
     fenData = converToFen(chessBoardData)
-
     board = chess.Board(fenData)
-    board_svg = chess.svg.board(board=board)
-    
-
     response_data = post_chess_api(fenData)
-    if response_data:
-        best_move = response_data.get("move")
-        print("Best move is: ", best_move)
 
-        if best_move:
-            move = chess.Move.from_uci(best_move)
-            if move in board.legal_moves:
-                board.push(move)
-
-            board_svg = chess.svg.board(board=board, lastmove=move, size=720)
-
-            with open("board.svg", "w") as f:
-                f.write(board_svg)
-
-        return []
-    else:
+    if not response_data:
         print("Error processing the chess_api")
         return -1
 
+    response = {"piece":response_data.get("piece"), "to":response_data.get("to"), "eval":response_data.get("eval"), "move": response_data.get("move")}
+    best_move = response["move"]
+
+    if not best_move:
+        print("No best move detected")
+        return -1
     
-if __name__ == "__main__":
-    image = cv2.imread("test/board.jpg")
-    corners = getBoardCorners(image)
+    move = chess.Move.from_uci(best_move)
 
-    image2 = cv2.imread("test/1.jpg")
+    originPoint = convertPosToOriginCoordinates(response["to"], inverse_matrix)
 
-    res = getBestMove(image, corners)
-    print(res)
+    response["x"] = int(originPoint[0])
+    response["y"] = int(originPoint[1])
+
+    if move in board.legal_moves:
+        board.push(move)
+
+    board_svg = chess.svg.board(board=board, lastmove=move, size=720)
+
+    svg_base64 = base64.b64encode(board_svg.encode("utf-8")).decode("utf-8")
+
+    response["board"] = f"data:image/svg+xml;base64,{svg_base64}"
+
+    with open("board.svg", "w") as f:
+        f.write(board_svg)
+
+    return response

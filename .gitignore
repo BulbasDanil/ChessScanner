@@ -1,3 +1,5 @@
 .secrets
 /received_images
 /output_with_circles
+.client_response.json
+/test

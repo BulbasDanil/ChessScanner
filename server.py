@@ -35,10 +35,12 @@ def getBestMove():
     image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
 
     try:
-        bestMove = mr.getBestMove(image, boardCorners)
+        response = mr.getBestMove(image, boardCorners)
 
-        result_json = {"piece": bestMove[0], "point": list[bestMove[1]]}
-        return jsonify(result_json), 200
+        if(response == -1):
+            return jsonify({"error":"see server logs"}), 500
+
+        return jsonify(response), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -54,10 +56,6 @@ def getChessboard():
     # Convert the received image file to an OpenCV format
     image_np = np.frombuffer(file.read(), np.uint8)
     image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
-
-    filename = f"{uuid.uuid4().hex}.jpg"
-    save_path = os.path.join(SAVE_DIR, filename)
-    cv2.imwrite(save_path, image)
 
     try:
         boardCorners = mr.getBoardCorners(image)
